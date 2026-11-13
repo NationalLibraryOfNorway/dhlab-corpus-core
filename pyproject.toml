@@ -1,0 +1,43 @@
+[project]
+name = "dhlab-core-api"
+version = "0.0.0"
+description = "Core DH-lab API: corpus building, concordances, collocations, totals and n-grams"
+authors = [
+    {name = "DH-lab, National Library of Norway"},
+]
+dependencies = ["fastapi[standard-no-fastapi-cloud-cli]>=0.136.1", "pydantic-settings>=2.14.1"]
+requires-python = ">=3.14"
+readme = "README.md"
+license = {text = "MIT"}
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+    "pytest-cov>=7.1.0",
+    "pytest-randomly>=4.1.0",
+    "httpx>=0.28.1",
+    "pre-commit>=4.6.0",
+    "ruff==0.15.13",  # This should match the pre-commit hook. It's useful to keep it here e.g. for auto-format on save in IDEs.
+]
+
+[build-system]
+requires = ["pdm-backend"]
+build-backend = "pdm.backend"
+
+[tool.pdm]
+distribution = true
+
+[tool.fastapi]
+entrypoint = "dhlab_core_api:make_app"
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+select = [
+    "I",  # Import sorting
+    "INP",  # No folders containing python files without also having __init__.py
+]
+
+[tool.ruff.lint.per-file-ignores]
+"scripts/**/*.py" = ["INP"]  # If there is a scripts folder, then it shouldn't need a __init__.py file

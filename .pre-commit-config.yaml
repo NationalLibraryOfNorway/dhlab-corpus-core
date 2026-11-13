@@ -1,0 +1,19 @@
+repos:
+-   repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v3.2.0
+    hooks:
+    -   id: trailing-whitespace
+    -   id: end-of-file-fixer
+    -   id: check-yaml
+    # We allow the test database to be larger than the default limit of 500 KiB. However, we want to keep an eye on its
+    # size, so we still keep an upper bound of ~50 MiB.
+    -   id: check-added-large-files
+        exclude: tests/data/.*
+    -   id: check-added-large-files
+        args: ['--maxkb=50000']
+- repo: https://github.com/astral-sh/ruff-pre-commit
+  rev: v0.15.13
+  hooks:
+    - id: ruff-check
+      args: [ --fix ]
+    - id: ruff-format
