@@ -1,4 +1,4 @@
-"""Request and response shapes of the legacy API (api.nb.no/dhlab), kept as they are for existing clients."""
+"""Request and response shapes of v1, which are those of the current DH-lab API (api.nb.no/dhlab), kept as they are for existing clients."""
 
 from typing import Annotated, Literal
 
