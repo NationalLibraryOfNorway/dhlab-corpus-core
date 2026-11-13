@@ -109,6 +109,30 @@ class Document:
     shard: str
 
 
+class _Where:
+    """Collects the conditions of a WHERE clause together with their parameters."""
+
+    def __init__(self) -> None:
+        self.conditions: list[str] = []
+        self.params: list[Any] = []
+
+    def add(self, condition: str, *params: Any) -> None:
+        self.conditions.append(condition)
+        self.params.extend(params)
+
+    def add_if_given(self, condition: str, value: Any) -> None:
+        if value is not None:
+            self.add(condition, value)
+
+    @property
+    def has_match(self) -> bool:
+        """Whether any condition is a full-text match."""
+        return any(" MATCH " in condition for condition in self.conditions)
+
+    def __str__(self) -> str:
+        return "WHERE " + " AND ".join(self.conditions) if self.conditions else ""
+
+
 class CorpusRepository:
     """Read-only access to the collection's SQLite files.
 
@@ -194,104 +218,72 @@ class CorpusRepository:
     # ------------------------------------------------------------------ metadata search
 
     @staticmethod
-    def _search_conditions(search: MetadataSearch, table: str) -> tuple[list[str], list[Any], bool] | None:
-        """SQL conditions for a search, their parameters and whether any of them is an FTS match.
-
-        Returns ``None`` if the search cannot match anything.
-        """
-        conditions: list[str] = []
-        params: list[Any] = []
-        has_match = False
+    def _search_query(search: MetadataSearch, columns: str, table: str) -> tuple[str, list[Any]] | None:
+        """The SELECT statement for a search and its parameters, or ``None`` if the search cannot match anything."""
+        where = _Where()
 
         for column, query in search.match.items():
             if column not in METADATA_COLUMNS:
                 raise ValueError(f"Unknown metadata column: {column}")
-            conditions.append(f"m.{column} MATCH ?")
-            params.append(query)
-            has_match = True
+            where.add(f"m.{column} MATCH ?", query)
 
         if search.year_from is not None and search.year_to is not None:
             # A closed range is matched against the index, year by year, rather than by scanning the table.
             years = range(max(search.year_from, MIN_YEAR), min(search.year_to, MAX_YEAR) + 1)
             if not years:
                 return None
-            conditions.append("m.year MATCH ?")
-            params.append(" OR ".join(str(year) for year in years))
-            has_match = True
-        elif search.year_from is not None:
-            conditions.append("cast(m.year AS int) >= ?")
-            params.append(search.year_from)
-        elif search.year_to is not None:
-            conditions.append("cast(m.year AS int) <= ?")
-            params.append(search.year_to)
+            where.add("m.year MATCH ?", " OR ".join(map(str, years)))
+        else:
+            where.add_if_given("cast(m.year AS int) >= ?", search.year_from)
+            where.add_if_given("cast(m.year AS int) <= ?", search.year_to)
 
-        if search.timestamp_from is not None:
-            conditions.append("cast(m.timestamp AS int) >= ?")
-            params.append(search.timestamp_from)
-        if search.timestamp_to is not None:
-            conditions.append("cast(m.timestamp AS int) <= ?")
-            params.append(search.timestamp_to)
+        where.add_if_given("cast(m.timestamp AS int) >= ?", search.timestamp_from)
+        where.add_if_given("cast(m.timestamp AS int) <= ?", search.timestamp_to)
 
-        if search.ddc is not None:
-            if "*" in search.ddc:
-                conditions.append("m.ddc MATCH ?")
-                params.append(search.ddc)
-                has_match = True
-            else:
-                # ddc is a space separated list of classes; match one whole class.
-                conditions.append("(m.ddc = ? OR m.ddc LIKE ? OR m.ddc LIKE ? OR m.ddc LIKE ?)")
-                params.extend([search.ddc, f"{search.ddc} %", f"% {search.ddc}", f"% {search.ddc} %"])
+        if search.ddc is not None and "*" in search.ddc:
+            where.add("m.ddc MATCH ?", search.ddc)
+        elif (ddc := search.ddc) is not None:
+            # ddc is a space separated list of classes; match one whole class.
+            where.add(
+                "(m.ddc = ? OR m.ddc LIKE ? OR m.ddc LIKE ? OR m.ddc LIKE ?)", ddc, f"{ddc} %", f"% {ddc}", f"% {ddc} %"
+            )
 
-        if search.fulltext is not None:
-            conditions.append("m.doc MATCH ?")
-            params.append(search.fulltext)
-            has_match = True
+        where.add_if_given("m.doc MATCH ?", search.fulltext)
+        where.add_if_given(f"{table} MATCH ?", search.freetext)
 
-        if search.freetext is not None:
-            conditions.append(f"{table} MATCH ?")
-            params.append(search.freetext)
-            has_match = True
-
-        return conditions, params, has_match
-
-    @staticmethod
-    def _search_sql(columns: str, table: str, conditions: list[str], search: MetadataSearch, has_match: bool) -> str:
-        order = search.order
-        sql = f"SELECT {columns} FROM {table} AS m"
-        if conditions:
-            sql += " WHERE " + " AND ".join(conditions)
-        if order == "random":
+        if search.order == "random":
             # SQLite's random() cannot be seeded, so a seeded search orders by a hash of seed and row instead.
-            sql += " ORDER BY random()" if search.seed is None else " ORDER BY seeded_random(m.rowid)"
-        elif order == "rank" and has_match:  # bm25 is only defined for full-text matches
-            sql += f" ORDER BY bm25({table})"
-        return sql + " LIMIT ?"
+            order = "ORDER BY random()" if search.seed is None else "ORDER BY seeded_random(m.rowid)"
+        elif search.order == "rank" and where.has_match:  # bm25 is only defined for full-text matches
+            order = f"ORDER BY bm25({table})"
+        else:
+            order = ""
+
+        return f"SELECT {columns} FROM {table} AS m {where} {order} LIMIT ?", [*where.params, search.limit]
 
     def search_metadata(self, search: MetadataSearch) -> list[dict[str, Any]]:
         """Documents whose metadata satisfies the search. ``search.fulltext`` is not supported here."""
-        built = self._search_conditions(search, "metadata_core_fts")
-        if built is None:
+        query = self._search_query(search, ", ".join(METADATA_COLUMNS), "metadata_core_fts")
+        if query is None:
             return []
-        conditions, params, has_match = built
-        sql = self._search_sql(", ".join(METADATA_COLUMNS), "metadata_core_fts", conditions, search, has_match)
+        sql, params = query
         with self.connect(METADATA_DB) as connection:
             _register_seeded_random(connection, search.seed)
-            rows = self._execute_user_query(connection, sql, [*params, search.limit])
+            rows = self._execute_user_query(connection, sql, params)
         return [dict(zip(METADATA_COLUMNS, row)) for row in rows]
 
     def search_fulltext_metadata(self, search: MetadataSearch, shards: Sequence[str]) -> list[dict[str, Any]]:
         """Documents whose text and metadata satisfy the search, up to ``search.limit`` from *each* shard."""
-        built = self._search_conditions(search, "ft_doc_metadata")
-        if built is None:
-            return []
-        conditions, params, has_match = built
         columns = "urn_seq, " + ", ".join(FULLTEXT_METADATA_COLUMNS[1:])
-        sql = self._search_sql(columns, "ft_doc_metadata", conditions, search, has_match)
+        query = self._search_query(search, columns, "ft_doc_metadata")
+        if query is None:
+            return []
+        sql, params = query
 
         def search_shard(shard: str) -> list[tuple]:
             with self.connect(shard) as connection:
                 _register_seeded_random(connection, search.seed)
-                return self._execute_user_query(connection, sql, [*params, search.limit])
+                return self._execute_user_query(connection, sql, params)
 
         return [
             dict(zip(FULLTEXT_METADATA_COLUMNS, row)) for rows in self.map_shards(search_shard, shards) for row in rows
