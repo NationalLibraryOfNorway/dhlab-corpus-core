@@ -17,5 +17,8 @@ done
 
 rm -rf tempstore
 
+# The API does not use the hyphenation databases
+rm -f db/hyph_*.db
+
 # Word totals for the whole collection, summed over the shards
 python ../../scripts/make_grand_total.py db
