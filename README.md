@@ -1,35 +1,10 @@
 # DH-lab core API
 
 The core of the DH-lab API — corpus building, concordances, collocations, word totals and n-grams — as a
-FastAPI application.
+FastAPI application. It serves two versions side by side:
 
-- **v1** mirrors the corresponding endpoints of the current DH-lab API (same paths, same requests, same response
-  shapes). It is mounted directly at the root, without a version prefix, so existing clients keep working unchanged.
-- **v2**, under `/v2`, is the renewed API: row oriented responses, strict validation and explicit limits.
-
-Experimental and non-core features of the current API (NER, geo data, image search, word bank, dispersion, …) are
-deliberately left out.
-
-## Differences from the current DH-lab API
-
-**What is the same:** the core endpoints are available at the same paths, take the same requests and return the
-same response shapes, so existing clients can use this API without changes.
-
-**What is different:**
-
-- **Scope.** Only the core functionality is included. Experimental and unrelated endpoints are gone.
-- **Validation.** Requests are validated before anything is run. Invalid input gives a `422` that says what is
-  wrong, and a malformed search expression gives a `400`; the current API answers `500` in both cases.
-- **A new version alongside the old.** The endpoints under `/v2` return lists of records instead of pandas-style
-  tables, identify documents by dhlabid, reject out-of-range values instead of silently adjusting them, and can
-  give reproducible samples with a `seed`.
-- **Code.** FastAPI instead of Flask, with database access, business logic and REST endpoints in separate layers.
-  Shards are queried in threads rather than process pools, and pandas is no longer a dependency.
-- **Configuration.** Settings come from environment variables or a git-ignored `.env` file, not from a
-  `config.py` in the repository.
-- **Tests.** An automated test suite runs against a small public domain test database.
-
-The details are listed under [Endpoints](#endpoints).
+- **v1**, at the root, has the same paths, requests and response shapes as the current DH-lab API.
+- **v2**, under `/v2`, is the renewed API.
 
 ## Setup
 
@@ -40,8 +15,8 @@ pdm install
 cp .env.example .env   # then adjust
 ```
 
-Configuration is read from environment variables or `.env` (which is git-ignored, so paths and deployment details
-stay out of the repository). See [`.env.example`](.env.example).
+Settings are read from environment variables or from `.env`, which is git-ignored so that paths and deployment
+details stay out of the repository.
 
 | Variable       | Default   | Meaning                                                                    |
 |----------------|-----------|----------------------------------------------------------------------------|
@@ -49,7 +24,7 @@ stay out of the repository). See [`.env.example`](.env.example).
 | `MAX_WORKERS`  | `8`       | Maximum number of shards queried concurrently                              |
 | `ROOT_PATH`    | *(empty)* | URL prefix when served behind a reverse proxy                              |
 
-`grand_total.db` (word totals for the whole collection) is derived from the shards:
+`grand_total.db` is derived from the shards, and must be rebuilt when they change:
 
 ```bash
 pdm run python scripts/make_grand_total.py <database_dir>
@@ -58,9 +33,60 @@ pdm run python scripts/make_grand_total.py <database_dir>
 ## Run
 
 ```bash
-pdm run fastapi dev          # development, interactive docs at http://127.0.0.1:8000/docs
-pdm run pytest tests         # tests, against the public domain test database in tests/data
+pdm run fastapi dev          # development server, interactive docs at http://127.0.0.1:8000/docs
+pdm run pytest tests         # tests
 ```
+
+The tests run against a small test database with public domain documents only, see
+[tests/data/README.md](tests/data/README.md). Point `DATABASE_DIR` at `./tests/data/db` to try the request examples
+in the interactive docs.
+
+## Endpoints
+
+| v1                                                             | v2                      |
+|----------------------------------------------------------------|-------------------------|
+| `POST /build_corpus`                                           | `POST /v2/corpus`       |
+| `POST /conc`, `POST /conccount`                                | `POST /v2/concordance`  |
+| `POST /urncolldist`, `POST /urncolldist_urn`                   | `POST /v2/collocations` |
+| `GET /totals/{top_words}`                                      | `GET /v2/totals?limit=` |
+| `POST /ngram_book`, `/ngram_periodicals`, `/ngram_newspapers`  | `POST /v2/ngram`        |
+
+Requests and responses are documented in the interactive docs.
+
+### What v2 changes
+
+- Responses are lists of records instead of pandas' `{column: {index: value}}` layout, and empty metadata values
+  are `null`. Collocations are returned as JSON, not as a JSON string inside JSON.
+- Unknown fields, out-of-range values and missing corpora are rejected with `422` instead of being silently
+  ignored or adjusted.
+- Documents are identified by dhlabid: a corpus is given as `dhlabids` (v1 also accepts URNs). The URN is still
+  part of the metadata that is returned.
+- A corpus may hold at most 30 000 documents per request (v1 silently samples larger ones).
+- Year ranges are inclusive in both ends, and dates are ISO dates.
+- Collocation windows stop at document boundaries, and collocates come with a plain mean distance.
+- Random sampling (`corpus`, `concordance`) is reproducible when the request has a `seed`.
+- There is one n-gram endpoint with a `doctype` parameter, returning one series per word.
+
+## Differences from the current DH-lab API
+
+- **Scope.** Only the core functionality is included. Experimental and unrelated endpoints (NER, geo data, image
+  search, word bank, dispersion, …) are left out.
+- **Code.** FastAPI instead of Flask, with database access, business logic and REST endpoints in separate layers.
+  Shards are queried in threads rather than process pools, and pandas is no longer a dependency.
+- **Configuration.** Settings come from the environment or `.env`, not from a `config.py` in the repository.
+- **Tests.** There is an automated test suite.
+
+v1 keeps the behaviour of the current API where clients can observe it, including its quirks (e.g. `to_year` is
+exclusive when `from_year` is also given, and collocations are a JSON string). It differs in these ways:
+
+- Invalid requests (wrong types, no corpus) give `422` and malformed search expressions give `400`. Both gave `500`.
+- `build_corpus` with no filters, or with only `limit` or `order_by`, returns documents instead of failing.
+- `build_corpus` with a dotted `ddk` such as `"839.82"` works. The punctuation used to be stripped, so it never
+  matched.
+- `build_corpus` row indexes are always `0..n-1`.
+- Collocation and n-gram requests that select no documents return an empty result instead of failing.
+- `ngram_periodicals` honours `ddk`.
+- N-grams are computed from `metadata_core` in `metadata.db` rather than the `metaindex_*` tables.
 
 ## Code organisation
 
@@ -83,9 +109,6 @@ src/dhlab_core_api/
 
 Routes only translate between HTTP and the service; the service never sees SQL or HTTP; the repository never sees
 request models. Both API versions share the same service and repository.
-
-Shards are queried concurrently in threads (SQLite releases the GIL), replacing the process pools of the old API.
-All databases are opened read-only.
 
 ## Databases
 
@@ -111,45 +134,3 @@ contain a few more tables (`ft_doc`, `urncount`, `bigram`, …) that this API do
 The integer dhlabid has different column names in different places: `dhlabid` in `metadata.db`, `urn_seq` in
 `urns.db` and `ft_doc_metadata`, and `urn` in the other shard tables. Only the text column `urn` in `urns.db`,
 `metadata.db` and `ft_doc_metadata` is an actual URN. `repository.py` hides this from the rest of the code.
-
-## Endpoints
-
-| v1 (as in the current API)                                    | v2                      |
-|---------------------------------------------------------------|-------------------------|
-| `POST /build_corpus`                                       | `POST /v2/corpus`       |
-| `POST /conc`, `POST /conccount`                         | `POST /v2/concordance`  |
-| `POST /urncolldist`, `POST /urncolldist_urn`            | `POST /v2/collocations` |
-| `GET /totals/{top_words}`                                  | `GET /v2/totals?limit=` |
-| `POST /ngram_book`, `/ngram_periodicals`, `/ngram_newspapers` | `POST /v2/ngram`     |
-
-### What v2 changes
-
-- Responses are lists of records instead of pandas' `{column: {index: value}}` layout; empty metadata values are
-  `null`. Collocations are returned as JSON, not as a JSON string inside JSON.
-- Unknown fields, out-of-range values and missing corpora are rejected with `422` instead of being silently
-  ignored or clamped. Malformed search expressions give `400` instead of `500`.
-- Year ranges are inclusive in both ends; dates are ISO dates.
-- Documents are identified by dhlabid: a corpus is given as `dhlabids` (v1 also accepts URNs). The URN is still part of
-  the metadata that is returned.
-- A corpus may hold at most 30 000 documents per request (v1 silently samples larger ones).
-- Collocation windows stop at document boundaries, and collocates come with a plain mean distance.
-- Random sampling (`corpus`, `concordance`) is reproducible when the request has a `seed`.
-- One n-gram endpoint with a `doctype` parameter; one series per word.
-
-### Where v1 differs from the current API
-
-v1 keeps the current API's quirks where clients can observe them (e.g. `to_year` being exclusive when `from_year` is
-also given, and collocations being a JSON string). The known differences:
-
-- Invalid requests (wrong types, no corpus) give `422`, malformed search expressions `400` — both were `500`.
-- `build_corpus` with no filters, or with only `limit`/`order_by`, returns documents instead of failing.
-- `build_corpus` with a dotted `ddk` such as `"839.82"` works (the punctuation used to be stripped, so it never
-  matched). Row indexes are always `0..n-1`.
-- Collocation and n-gram requests that select no documents return an empty result instead of failing.
-- `ngram_periodicals` honours `ddk`.
-- N-grams are computed from `metadata_core` in `metadata.db` rather than the `metaindex_*` tables.
-- `totals` reads `grand_total.db` as before; the file is now built by `scripts/make_grand_total.py`.
-
-## Test database
-
-See [tests/data/README.md](tests/data/README.md). It contains only documents in the public domain.
