@@ -128,8 +128,7 @@ The collection is a set of read-only SQLite files in `DATABASE_DIR`. The API use
 | `grand_total.db` | `grand_total`       | Frequency of each word in the whole collection; used for totals                   |
 
 Each `alto_*.db` file is a *shard* holding the documents with dhlabids in the range given by its name. The shards
-contain a few more tables (`ft_doc`, `urncount`, `bigram`, …) that this API does not use, and the same goes for the
-`hyph_*.db` files.
+contain a few more tables (`ft_doc`, `urncount`, `bigram`, …) that this API does not use.
 
 The integer dhlabid has different column names in different places: `dhlabid` in `metadata.db`, `urn_seq` in
 `urns.db` and `ft_doc_metadata`, and `urn` in the other shard tables. Only the text column `urn` in `urns.db`,
