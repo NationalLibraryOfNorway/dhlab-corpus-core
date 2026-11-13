@@ -23,7 +23,7 @@ MAX_CORPUS_SIZE = 30000
 
 
 def get_v1_router(service: CorpusService) -> APIRouter:
-    v1 = APIRouter(tags=["v1 (legacy)"])
+    v1 = APIRouter(tags=["v1"])
 
     def corpus_ids(params: _CorpusParams) -> list[int]:
         return params.dhlabids if params.dhlabids is not None else service.resolve_urns(params.urns)

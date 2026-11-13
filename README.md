@@ -71,9 +71,9 @@ src/dhlab_core_api/
 ├── repository.py   database access: all SQL and knowledge of files and tables
 ├── service.py      business logic: sampling, limits, aggregation across shards
 ├── errors.py       errors that cross the layers
-├── v1/             legacy API
+├── v1/             same API as the current one
 │   ├── datatypes.py   request/response models (validation)
-│   ├── legacy.py      legacy parameter semantics and pandas-shaped results
+│   ├── legacy.py      v1 parameter semantics and pandas-shaped results
 │   └── routes.py      REST endpoints
 └── v2/             renewed API
     ├── datatypes.py   request/response models (validation)
