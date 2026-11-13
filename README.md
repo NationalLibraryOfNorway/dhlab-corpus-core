@@ -10,6 +10,27 @@ FastAPI application.
 Experimental and non-core features of the current API (NER, geo data, image search, word bank, dispersion, …) are
 deliberately left out.
 
+## Differences from the current DH-lab API
+
+**What is the same:** the core endpoints are available at the same paths, take the same requests and return the
+same response shapes, so existing clients can use this API without changes.
+
+**What is different:**
+
+- **Scope.** Only the core functionality is included. Experimental and unrelated endpoints are gone.
+- **Validation.** Requests are validated before anything is run. Invalid input gives a `422` that says what is
+  wrong, and a malformed search expression gives a `400`; the current API answers `500` in both cases.
+- **A new version alongside the old.** The endpoints under `/v2` return lists of records instead of pandas-style
+  tables, identify documents by dhlabid, reject out-of-range values instead of silently adjusting them, and can
+  give reproducible samples with a `seed`.
+- **Code.** FastAPI instead of Flask, with database access, business logic and REST endpoints in separate layers.
+  Shards are queried in threads rather than process pools, and pandas is no longer a dependency.
+- **Configuration.** Settings come from environment variables or a git-ignored `.env` file, not from a
+  `config.py` in the repository.
+- **Tests.** An automated test suite runs against a small public domain test database.
+
+The details are listed under [Endpoints](#endpoints).
+
 ## Setup
 
 You need [python](https://www.python.org/) and [pdm](https://pdm-project.org/en/latest/).
@@ -65,6 +86,31 @@ request models. Both API versions share the same service and repository.
 
 Shards are queried concurrently in threads (SQLite releases the GIL), replacing the process pools of the old API.
 All databases are opened read-only.
+
+## Databases
+
+The collection is a set of read-only SQLite files in `DATABASE_DIR`. The API uses these tables:
+
+| File             | Table               | Contents                                                                         |
+|------------------|---------------------|----------------------------------------------------------------------------------|
+| `urns.db`        | `urns`              | One row per document: dhlabid (`urn_seq`), URN, doctype and its shard (`db_path`) |
+| `metadata.db`    | `metadata_core`     | One row per document: dhlabid, URN, title, authors, year, publisher, …           |
+|                  | `metadata_core_fts` | The same metadata as a full-text (FTS5) index, used for building corpora          |
+| `alto_<from>_<to>.db` | `ft`           | The text, one row per token in reading order; used for collocations               |
+|                  | `ft_para`           | Full-text index with one row per paragraph; used for concordances                 |
+|                  | `ft_para_trigram`   | Character trigram version of `ft_para` (not present in every shard)               |
+|                  | `ft_doc_metadata`   | Full-text index of each document's text together with its metadata; used when a corpus is built with a `fulltext` filter |
+|                  | `unigram`           | Frequency of each word per document; used for n-grams                             |
+|                  | `totals`            | Frequency of each word in the shard; source for `grand_total.db`                  |
+| `grand_total.db` | `grand_total`       | Frequency of each word in the whole collection; used for totals                   |
+
+Each `alto_*.db` file is a *shard* holding the documents with dhlabids in the range given by its name. The shards
+contain a few more tables (`ft_doc`, `urncount`, `bigram`, …) that this API does not use, and the same goes for the
+`hyph_*.db` files.
+
+The integer dhlabid has different column names in different places: `dhlabid` in `metadata.db`, `urn_seq` in
+`urns.db` and `ft_doc_metadata`, and `urn` in the other shard tables. Only the text column `urn` in `urns.db`,
+`metadata.db` and `ft_doc_metadata` is an actual URN. `repository.py` hides this from the rest of the code.
 
 ## Endpoints
 
